@@ -1,4 +1,4 @@
-package com.trimpowers;
+package com.coral;
 
 import io.papermc.paper.event.player.PlayerArmorChangeEvent;
 import org.bukkit.ChatColor;
@@ -26,7 +26,7 @@ import org.bukkit.scheduler.BukkitRunnable;
 import java.util.Collections;
 import java.util.List;
 
-public class TrimPowers extends JavaPlugin implements Listener, CommandExecutor, TabCompleter {
+public class Coral extends JavaPlugin implements Listener, CommandExecutor, TabCompleter {
 
     @Override
     public void onEnable() {
@@ -118,7 +118,7 @@ public class TrimPowers extends JavaPlugin implements Listener, CommandExecutor,
             sender.sendMessage(c("&cThis command can only be used by players."));
             return true;
         }
-        if (!p.hasPermission("trimpowers.givealltrims") && !p.isOp()) {
+        if (!p.hasPermission("coral.givealltrims") && !p.isOp()) {
             p.sendMessage(c("&cYou do not have permission to use this command."));
             return true;
         }
