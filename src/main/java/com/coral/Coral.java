@@ -1,6 +1,6 @@
 package com.coral;
 
-import io.papermc.paper.event.player.PlayerArmorChangeEvent;
+import io.papermc.paper.event.entity.EntityEquipmentChangedEvent;
 import org.bukkit.ChatColor;
 import org.bukkit.Material;
 import org.bukkit.command.Command;
@@ -38,6 +38,11 @@ public class Coral extends JavaPlugin implements Listener, CommandExecutor, TabC
         for (Player p : getServer().getOnlinePlayers()) refreshTrimPowers(p);
     }
 
+    // ─── Armor Trim Powers ───
+
+    /** Every trimmed armor piece is made unbreakable. Flow/Silence/Eye/Raiser trims additionally
+     * grant an infinite potion effect while worn - Speed II, Strength II, Resistance I, and
+     * Regeneration I respectively. Re-run whenever armor changes, on join, and after respawn. */
     private void refreshTrimPowers(Player p) {
         ItemStack[] armor = p.getInventory().getArmorContents();
         boolean hasFlow = false, hasSilence = false, hasEye = false, hasRaiser = false;
@@ -87,9 +92,13 @@ public class Coral extends JavaPlugin implements Listener, CommandExecutor, TabC
         }.runTask(this);
     }
 
+    /** Re-scan armor whenever any equipment slot changes (equip/unequip, dispenser, drag,
+     * hotbar-swap, durability change, etc.). EntityEquipmentChangedEvent fires for all
+     * equipment slots, not just armor, but re-scanning on any of them is harmless. */
     @EventHandler
-    public void onArmorChange(PlayerArmorChangeEvent e) {
-        refreshTrimPowers(e.getPlayer());
+    public void onEquipmentChange(EntityEquipmentChangedEvent e) {
+        if (!(e.getEntity() instanceof Player p)) return;
+        refreshTrimPowers(p);
     }
 
     private ItemStack trimmedPiece(Material material, TrimPattern pattern) {
@@ -101,6 +110,7 @@ public class Coral extends JavaPlugin implements Listener, CommandExecutor, TabC
         return piece;
     }
 
+    /** /givealltrims - outfits the sender with a full netherite set carrying all four power trims at once. */
     private void giveAllTrims(Player p) {
         PlayerInventory inv = p.getInventory();
         inv.setHelmet(trimmedPiece(Material.NETHERITE_HELMET, TrimPattern.EYE));
@@ -110,6 +120,8 @@ public class Coral extends JavaPlugin implements Listener, CommandExecutor, TabC
         p.sendMessage(c("&dYou have been given a full trim-powered netherite set (Eye / Silence / Flow / Raiser)."));
         refreshTrimPowers(p);
     }
+
+    // ─── Commands ───
 
     @Override
     public boolean onCommand(CommandSender sender, Command cmd, String label, String[] args) {
@@ -130,6 +142,8 @@ public class Coral extends JavaPlugin implements Listener, CommandExecutor, TabC
     public List<String> onTabComplete(CommandSender sender, Command cmd, String label, String[] args) {
         return label.equalsIgnoreCase("givealltrims") ? Collections.emptyList() : null;
     }
+
+    // ─── Utility ───
 
     private String c(String s) { return ChatColor.translateAlternateColorCodes('&', s); }
 }
