@@ -1,0 +1,12 @@
+name: TrimPowers
+version: 1.0
+main: com.trimpowers.TrimPowers
+api-version: '1.21'
+commands:
+  givealltrims:
+    description: Gives a full trim-powered netherite armor set
+    usage: /givealltrims
+permissions:
+  trimpowers.givealltrims:
+    description: Allows use of /givealltrims
+    default: op
