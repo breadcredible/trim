@@ -47,10 +47,10 @@ import java.util.UUID;
 
 public class Coral extends JavaPlugin implements Listener, CommandExecutor, TabCompleter {
 
-    private static final long FLOW_COOLDOWN_MS = 60_000;
-    private static final long SILENCE_COOLDOWN_MS = 15_000;
-    private static final long RAISER_COOLDOWN_MS = 60_000;
-    private static final long EYE_COOLDOWN_MS = 60_000;
+    private static final long FLOW_COOLDOWN_MS = 20_000;
+    private static final long SILENCE_COOLDOWN_MS = 20_000;
+    private static final long RAISER_COOLDOWN_MS = 20_000;
+    private static final long EYE_COOLDOWN_MS = 20_000;
     private static final long TIDE_COOLDOWN_MS = 60_000;
 
     private final Map<UUID, Long> flowCooldowns = new HashMap<>();
@@ -97,17 +97,24 @@ public class Coral extends JavaPlugin implements Listener, CommandExecutor, TabC
         }
         if (changed) p.getInventory().setArmorContents(armor);
 
-        int inf = Integer.MAX_VALUE;
         boolean grantsSpeed = hasFlow || hasTide;
         boolean grantsStrength = hasSilence || hasTide;
-        if (grantsSpeed) p.addPotionEffect(new PotionEffect(PotionEffectType.SPEED, inf, 1, true, false, false));
-        else p.removePotionEffect(PotionEffectType.SPEED);
-        if (grantsStrength) p.addPotionEffect(new PotionEffect(PotionEffectType.STRENGTH, inf, 1, true, false, false));
-        else p.removePotionEffect(PotionEffectType.STRENGTH);
-        if (hasEye) p.addPotionEffect(new PotionEffect(PotionEffectType.RESISTANCE, inf, 0, true, false, false));
-        else p.removePotionEffect(PotionEffectType.RESISTANCE);
-        if (hasRaiser) p.addPotionEffect(new PotionEffect(PotionEffectType.REGENERATION, inf, 0, true, false, false));
-        else p.removePotionEffect(PotionEffectType.REGENERATION);
+        syncTrimEffect(p, PotionEffectType.SPEED, 1, grantsSpeed);
+        syncTrimEffect(p, PotionEffectType.STRENGTH, 1, grantsStrength);
+        syncTrimEffect(p, PotionEffectType.RESISTANCE, 0, hasEye);
+        syncTrimEffect(p, PotionEffectType.REGENERATION, 0, hasRaiser);
+    }
+
+    // Only touches the plugin's own (huge-duration) effects, so potion effects are left alone.
+    private void syncTrimEffect(Player p, PotionEffectType type, int amplifier, boolean grant) {
+        PotionEffect current = p.getPotionEffect(type);
+        boolean ours = current != null && current.getDuration() > 1_000_000_000;
+        if (grant) {
+            if (ours && current.getAmplifier() == amplifier) return;
+            p.addPotionEffect(new PotionEffect(type, Integer.MAX_VALUE, amplifier, true, false, false));
+        } else if (ours) {
+            p.removePotionEffect(type);
+        }
     }
 
     @EventHandler
@@ -128,6 +135,10 @@ public class Coral extends JavaPlugin implements Listener, CommandExecutor, TabC
     @EventHandler
     public void onEquipmentChange(EntityEquipmentChangedEvent e) {
         if (!(e.getEntity() instanceof Player p)) return;
+        boolean armorChanged = e.getEquipmentChanges().keySet().stream().anyMatch(s ->
+                s == EquipmentSlot.HEAD || s == EquipmentSlot.CHEST
+                        || s == EquipmentSlot.LEGS || s == EquipmentSlot.FEET);
+        if (!armorChanged) return;
         refreshTrimPowers(p);
     }
 
@@ -202,10 +213,20 @@ public class Coral extends JavaPlugin implements Listener, CommandExecutor, TabC
 
     @EventHandler(priority = EventPriority.HIGH)
     public void onAbilityDamageBypassArmor(EntityDamageEvent e) {
-        if (!abilityBypassArmor.remove(e.getEntity().getUniqueId())) return;
+        if (!abilityBypassArmor.contains(e.getEntity().getUniqueId())) return;
         if (e.isApplicable(EntityDamageEvent.DamageModifier.ARMOR)) e.setDamage(EntityDamageEvent.DamageModifier.ARMOR, 0.0);
         if (e.isApplicable(EntityDamageEvent.DamageModifier.RESISTANCE)) e.setDamage(EntityDamageEvent.DamageModifier.RESISTANCE, 0.0);
         if (e.isApplicable(EntityDamageEvent.DamageModifier.MAGIC)) e.setDamage(EntityDamageEvent.DamageModifier.MAGIC, 0.0);
+    }
+
+    private void damageIgnoringArmor(LivingEntity target, double amount, Player source) {
+        UUID id = target.getUniqueId();
+        abilityBypassArmor.add(id);
+        try {
+            target.damage(amount, source);
+        } finally {
+            abilityBypassArmor.remove(id);
+        }
     }
 
     private void tryActivateFlow(Player p) {
@@ -243,8 +264,7 @@ public class Coral extends JavaPlugin implements Listener, CommandExecutor, TabC
                     loc.getWorld().spawnParticle(Particle.SOUL, loc, 60, 1.2, 0.2, 1.2, 0.03);
                     for (Entity nearby : loc.getWorld().getNearbyEntities(loc, 3.5, 3.5, 3.5)) {
                         if (nearby instanceof LivingEntity le && nearby != p) {
-                            abilityBypassArmor.add(le.getUniqueId());
-                            le.damage(6.0, p);
+                            damageIgnoringArmor(le, 6.0, p);
                         }
                     }
                     cancel();
@@ -338,7 +358,7 @@ public class Coral extends JavaPlugin implements Listener, CommandExecutor, TabC
                 point.getWorld().spawnParticle(Particle.SPLASH, point, 14, 0.4, 0.4, 0.4, 0.05);
                 for (Entity nearby : point.getWorld().getNearbyEntities(point, 1.5, 1.5, 1.5)) {
                     if (nearby instanceof LivingEntity le && nearby != p && hitAlready.add(le.getUniqueId())) {
-                        le.damage(10.0, p);
+                        damageIgnoringArmor(le, 10.0, p);
                         le.setVelocity(le.getVelocity().add(dir.clone().multiply(0.6).setY(0.2)));
                     }
                 }
