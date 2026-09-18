@@ -15,13 +15,16 @@ import org.bukkit.entity.Entity;
 import org.bukkit.entity.LivingEntity;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
+import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
 import org.bukkit.event.entity.EntityDamageByEntityEvent;
 import org.bukkit.event.entity.EntityDamageEvent;
 import org.bukkit.event.entity.EntityPotionEffectEvent;
+import org.bukkit.event.player.PlayerInteractEvent;
 import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.player.PlayerRespawnEvent;
 import org.bukkit.event.player.PlayerSwapHandItemsEvent;
+import org.bukkit.inventory.EquipmentSlot;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.PlayerInventory;
 import org.bukkit.inventory.meta.ArmorMeta;
@@ -45,17 +48,20 @@ import java.util.UUID;
 public class Coral extends JavaPlugin implements Listener, CommandExecutor, TabCompleter {
 
     private static final long FLOW_COOLDOWN_MS = 60_000;
-    private static final long SILENCE_COOLDOWN_MS = 60_000;
+    private static final long SILENCE_COOLDOWN_MS = 15_000;
     private static final long RAISER_COOLDOWN_MS = 60_000;
     private static final long EYE_COOLDOWN_MS = 60_000;
+    private static final long TIDE_COOLDOWN_MS = 60_000;
 
     private final Map<UUID, Long> flowCooldowns = new HashMap<>();
     private final Map<UUID, Long> silenceCooldowns = new HashMap<>();
     private final Map<UUID, Long> raiserCooldowns = new HashMap<>();
     private final Map<UUID, Long> eyeCooldowns = new HashMap<>();
+    private final Map<UUID, Long> tideCooldowns = new HashMap<>();
     private final Map<UUID, BukkitRunnable> actionBarTasks = new HashMap<>();
     private final Set<UUID> flowPending = new HashSet<>();
     private final Set<UUID> silenceActive = new HashSet<>();
+    private final Set<UUID> abilityBypassArmor = new HashSet<>();
 
     @Override
     public void onEnable() {
@@ -69,7 +75,7 @@ public class Coral extends JavaPlugin implements Listener, CommandExecutor, TabC
 
     private void refreshTrimPowers(Player p) {
         ItemStack[] armor = p.getInventory().getArmorContents();
-        boolean hasFlow = false, hasSilence = false, hasEye = false, hasRaiser = false;
+        boolean hasFlow = false, hasSilence = false, hasEye = false, hasRaiser = false, hasTide = false;
         boolean changed = false;
         for (int i = 0; i < armor.length; i++) {
             ItemStack piece = armor[i];
@@ -87,13 +93,16 @@ public class Coral extends JavaPlugin implements Listener, CommandExecutor, TabC
             else if (pattern.equals(TrimPattern.SILENCE)) hasSilence = true;
             else if (pattern.equals(TrimPattern.EYE)) hasEye = true;
             else if (pattern.equals(TrimPattern.RAISER)) hasRaiser = true;
+            else if (pattern.equals(TrimPattern.TIDE)) hasTide = true;
         }
         if (changed) p.getInventory().setArmorContents(armor);
 
         int inf = Integer.MAX_VALUE;
-        if (hasFlow) p.addPotionEffect(new PotionEffect(PotionEffectType.SPEED, inf, 1, true, false, false));
+        boolean grantsSpeed = hasFlow || hasTide;
+        boolean grantsStrength = hasSilence || hasTide;
+        if (grantsSpeed) p.addPotionEffect(new PotionEffect(PotionEffectType.SPEED, inf, 1, true, false, false));
         else p.removePotionEffect(PotionEffectType.SPEED);
-        if (hasSilence) p.addPotionEffect(new PotionEffect(PotionEffectType.STRENGTH, inf, 1, true, false, false));
+        if (grantsStrength) p.addPotionEffect(new PotionEffect(PotionEffectType.STRENGTH, inf, 1, true, false, false));
         else p.removePotionEffect(PotionEffectType.STRENGTH);
         if (hasEye) p.addPotionEffect(new PotionEffect(PotionEffectType.RESISTANCE, inf, 0, true, false, false));
         else p.removePotionEffect(PotionEffectType.RESISTANCE);
@@ -162,6 +171,25 @@ public class Coral extends JavaPlugin implements Listener, CommandExecutor, TabC
     }
 
     @EventHandler
+    public void onRightClick(PlayerInteractEvent e) {
+        if (e.getHand() != EquipmentSlot.HAND) return;
+        if (!e.getAction().isRightClick()) return;
+        Player p = e.getPlayer();
+        if (!p.isSneaking()) return;
+        if (!hasTrimPattern(p, TrimPattern.TIDE)) return;
+        e.setCancelled(true);
+        tryActivateTide(p);
+    }
+
+    private boolean hasTrimPattern(Player p, TrimPattern pattern) {
+        for (ItemStack piece : p.getInventory().getArmorContents()) {
+            if (piece != null && piece.getItemMeta() instanceof ArmorMeta meta && meta.hasTrim()
+                    && meta.getTrim().getPattern().equals(pattern)) return true;
+        }
+        return false;
+    }
+
+    @EventHandler
     public void onEntityDamageByEntity(EntityDamageByEntityEvent e) {
         if (!(e.getDamager() instanceof Player damager)) return;
         if (!silenceActive.contains(damager.getUniqueId())) return;
@@ -169,6 +197,15 @@ public class Coral extends JavaPlugin implements Listener, CommandExecutor, TabC
             e.setDamage(EntityDamageEvent.DamageModifier.BLOCKING, 0.0);
         }
         e.setDamage(e.getDamage() * 1.5);
+        e.getEntity().getWorld().spawnParticle(Particle.CRIT, e.getEntity().getLocation().add(0, 1, 0), 12, 0.3, 0.4, 0.3, 0.02);
+    }
+
+    @EventHandler(priority = EventPriority.HIGH)
+    public void onAbilityDamageBypassArmor(EntityDamageEvent e) {
+        if (!abilityBypassArmor.remove(e.getEntity().getUniqueId())) return;
+        if (e.isApplicable(EntityDamageEvent.DamageModifier.ARMOR)) e.setDamage(EntityDamageEvent.DamageModifier.ARMOR, 0.0);
+        if (e.isApplicable(EntityDamageEvent.DamageModifier.RESISTANCE)) e.setDamage(EntityDamageEvent.DamageModifier.RESISTANCE, 0.0);
+        if (e.isApplicable(EntityDamageEvent.DamageModifier.MAGIC)) e.setDamage(EntityDamageEvent.DamageModifier.MAGIC, 0.0);
     }
 
     private void tryActivateFlow(Player p) {
@@ -183,7 +220,7 @@ public class Coral extends JavaPlugin implements Listener, CommandExecutor, TabC
         startCooldownDisplay(p);
 
         Vector dir = p.getLocation().getDirection().normalize();
-        p.setVelocity(dir.multiply(1.8).setY(0.45));
+        p.setVelocity(dir.multiply(3.0).setY(0.6));
         p.getWorld().spawnParticle(Particle.SOUL, p.getLocation(), 40, 0.3, 0.1, 0.3, 0.02);
         flowPending.add(id);
         new BukkitRunnable() {
@@ -206,6 +243,7 @@ public class Coral extends JavaPlugin implements Listener, CommandExecutor, TabC
                     loc.getWorld().spawnParticle(Particle.SOUL, loc, 60, 1.2, 0.2, 1.2, 0.03);
                     for (Entity nearby : loc.getWorld().getNearbyEntities(loc, 3.5, 3.5, 3.5)) {
                         if (nearby instanceof LivingEntity le && nearby != p) {
+                            abilityBypassArmor.add(le.getUniqueId());
                             le.damage(6.0, p);
                         }
                     }
@@ -275,6 +313,40 @@ public class Coral extends JavaPlugin implements Listener, CommandExecutor, TabC
         }.runTaskLater(this, 1L);
     }
 
+    private void tryActivateTide(Player p) {
+        UUID id = p.getUniqueId();
+        long now = System.currentTimeMillis();
+        Long cd = tideCooldowns.get(id);
+        if (cd != null && cd > now) {
+            p.sendMessage(c("&cPlease wait until the cooldown finishes."));
+            return;
+        }
+        tideCooldowns.put(id, now + TIDE_COOLDOWN_MS);
+        startCooldownDisplay(p);
+
+        Vector dir = p.getLocation().getDirection().normalize();
+        Location origin = p.getEyeLocation();
+        Set<UUID> hitAlready = new HashSet<>();
+        new BukkitRunnable() {
+            int step = 0;
+            @Override public void run() {
+                if (!p.isOnline() || step > 16) {
+                    cancel();
+                    return;
+                }
+                Location point = origin.clone().add(dir.clone().multiply(step * 0.75));
+                point.getWorld().spawnParticle(Particle.SPLASH, point, 14, 0.4, 0.4, 0.4, 0.05);
+                for (Entity nearby : point.getWorld().getNearbyEntities(point, 1.5, 1.5, 1.5)) {
+                    if (nearby instanceof LivingEntity le && nearby != p && hitAlready.add(le.getUniqueId())) {
+                        le.damage(10.0, p);
+                        le.setVelocity(le.getVelocity().add(dir.clone().multiply(0.6).setY(0.2)));
+                    }
+                }
+                step++;
+            }
+        }.runTaskTimer(this, 0L, 1L);
+    }
+
     private void startCooldownDisplay(Player p) {
         UUID id = p.getUniqueId();
         if (actionBarTasks.containsKey(id)) return;
@@ -290,6 +362,7 @@ public class Coral extends JavaPlugin implements Listener, CommandExecutor, TabC
                 remaining = Math.max(remaining, silenceCooldowns.getOrDefault(id, 0L) - now);
                 remaining = Math.max(remaining, raiserCooldowns.getOrDefault(id, 0L) - now);
                 remaining = Math.max(remaining, eyeCooldowns.getOrDefault(id, 0L) - now);
+                remaining = Math.max(remaining, tideCooldowns.getOrDefault(id, 0L) - now);
                 if (remaining <= 0) {
                     actionBarTasks.remove(id);
                     cancel();
