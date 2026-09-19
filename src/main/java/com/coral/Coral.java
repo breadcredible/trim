@@ -264,7 +264,7 @@ public class Coral extends JavaPlugin implements Listener, CommandExecutor, TabC
                     loc.getWorld().spawnParticle(Particle.SOUL, loc, 60, 1.2, 0.2, 1.2, 0.03);
                     for (Entity nearby : loc.getWorld().getNearbyEntities(loc, 3.5, 3.5, 3.5)) {
                         if (nearby instanceof LivingEntity le && nearby != p) {
-                            damageIgnoringArmor(le, 6.0, p);
+                            damageIgnoringArmor(le, 10.0, p);
                         }
                     }
                     cancel();
