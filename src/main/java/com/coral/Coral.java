@@ -4,6 +4,8 @@ import io.papermc.paper.event.entity.EntityEquipmentChangedEvent;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
 import org.bukkit.ChatColor;
+import org.bukkit.FluidCollisionMode;
+import org.bukkit.GameMode;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.Particle;
@@ -14,14 +16,19 @@ import org.bukkit.command.TabCompleter;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.LivingEntity;
 import org.bukkit.entity.Player;
+import org.bukkit.event.Event;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
+import org.bukkit.event.block.BlockBreakEvent;
 import org.bukkit.event.entity.EntityDamageByEntityEvent;
 import org.bukkit.event.entity.EntityDamageEvent;
 import org.bukkit.event.entity.EntityPotionEffectEvent;
+import org.bukkit.event.entity.PlayerDeathEvent;
+import org.bukkit.event.player.PlayerInteractEntityEvent;
 import org.bukkit.event.player.PlayerInteractEvent;
 import org.bukkit.event.player.PlayerJoinEvent;
+import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.event.player.PlayerRespawnEvent;
 import org.bukkit.event.player.PlayerSwapHandItemsEvent;
 import org.bukkit.inventory.EquipmentSlot;
@@ -35,6 +42,7 @@ import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.potion.PotionEffect;
 import org.bukkit.potion.PotionEffectType;
 import org.bukkit.scheduler.BukkitRunnable;
+import org.bukkit.util.RayTraceResult;
 import org.bukkit.util.Vector;
 
 import java.util.Collections;
@@ -53,7 +61,18 @@ public class Coral extends JavaPlugin implements Listener, CommandExecutor, TabC
     private static final long EYE_COOLDOWN_MS = 20_000;
     private static final long TIDE_COOLDOWN_MS = 60_000;
 
+    // flow ult 2 (invisibility) and ult 3 (stun)
+    private static final long FLOW_INVIS_COOLDOWN_MS = 90_000;
+    private static final long FLOW_INVIS_TICKS = 100L; // 5 seconds
+    private static final long FLOW_STUN_COOLDOWN_MS = 60_000;
+    private static final long FLOW_STUN_DURATION_MS = 3_000;
+    private static final double FLOW_STUN_RANGE = 15.0;
+
     private final Map<UUID, Long> flowCooldowns = new HashMap<>();
+    private final Map<UUID, Long> flowInvisCooldowns = new HashMap<>();
+    private final Map<UUID, Long> flowStunCooldowns = new HashMap<>();
+    private final Map<UUID, Long> stunnedUntil = new HashMap<>();
+    private final Set<UUID> flowInvisible = new HashSet<>();
     private final Map<UUID, Long> silenceCooldowns = new HashMap<>();
     private final Map<UUID, Long> raiserCooldowns = new HashMap<>();
     private final Map<UUID, Long> eyeCooldowns = new HashMap<>();
@@ -69,6 +88,10 @@ public class Coral extends JavaPlugin implements Listener, CommandExecutor, TabC
         if (getCommand("givealltrims") != null) {
             getCommand("givealltrims").setExecutor(this);
             getCommand("givealltrims").setTabCompleter(this);
+        }
+        if (getCommand("use") != null) {
+            getCommand("use").setExecutor(this);
+            getCommand("use").setTabCompleter(this);
         }
         for (Player p : getServer().getOnlinePlayers()) refreshTrimPowers(p);
     }
@@ -119,7 +142,63 @@ public class Coral extends JavaPlugin implements Listener, CommandExecutor, TabC
 
     @EventHandler
     public void onJoin(PlayerJoinEvent e) {
-        refreshTrimPowers(e.getPlayer());
+        Player joiner = e.getPlayer();
+        for (UUID id : flowInvisible) {
+            Player hidden = getServer().getPlayer(id);
+            if (hidden != null && !hidden.equals(joiner)) joiner.hidePlayer(this, hidden);
+        }
+        refreshTrimPowers(joiner);
+    }
+
+    @EventHandler
+    public void onQuit(PlayerQuitEvent e) {
+        UUID id = e.getPlayer().getUniqueId();
+        endFlowInvisibility(id);
+        stunnedUntil.remove(id);
+    }
+
+    @EventHandler
+    public void onDeath(PlayerDeathEvent e) {
+        UUID id = e.getEntity().getUniqueId();
+        endFlowInvisibility(id);
+        stunnedUntil.remove(id);
+    }
+
+    // stun: no right clicks (air, blocks, items) ...
+    @EventHandler(priority = EventPriority.LOWEST)
+    public void onStunnedInteract(PlayerInteractEvent e) {
+        if (!isStunned(e.getPlayer().getUniqueId())) return;
+        e.setUseItemInHand(Event.Result.DENY);
+        e.setUseInteractedBlock(Event.Result.DENY);
+        e.setCancelled(true);
+    }
+
+    @EventHandler(priority = EventPriority.LOWEST)
+    public void onStunnedInteractEntity(PlayerInteractEntityEvent e) {
+        if (isStunned(e.getPlayer().getUniqueId())) e.setCancelled(true);
+    }
+
+    // ... and no left clicks (hitting things, breaking blocks)
+    @EventHandler(priority = EventPriority.LOWEST)
+    public void onStunnedAttack(EntityDamageByEntityEvent e) {
+        if (!(e.getDamager() instanceof Player damager)) return;
+        if (abilityBypassArmor.contains(e.getEntity().getUniqueId())) return; // ability damage still lands
+        if (isStunned(damager.getUniqueId())) e.setCancelled(true);
+    }
+
+    @EventHandler(priority = EventPriority.LOWEST)
+    public void onStunnedBreak(BlockBreakEvent e) {
+        if (isStunned(e.getPlayer().getUniqueId())) e.setCancelled(true);
+    }
+
+    private boolean isStunned(UUID id) {
+        Long until = stunnedUntil.get(id);
+        if (until == null) return false;
+        if (until <= System.currentTimeMillis()) {
+            stunnedUntil.remove(id);
+            return false;
+        }
+        return true;
     }
 
     @EventHandler
@@ -186,6 +265,7 @@ public class Coral extends JavaPlugin implements Listener, CommandExecutor, TabC
         if (e.getHand() != EquipmentSlot.HAND) return;
         if (!e.getAction().isRightClick()) return;
         Player p = e.getPlayer();
+        if (isStunned(p.getUniqueId())) return;
         if (!p.isSneaking()) return;
         if (!hasTrimPattern(p, TrimPattern.TIDE)) return;
         e.setCancelled(true);
@@ -271,6 +351,83 @@ public class Coral extends JavaPlugin implements Listener, CommandExecutor, TabC
                 }
             }
         }.runTaskTimer(this, 1L, 1L);
+    }
+
+    // flow ult 2: true invisibility for 5 seconds (hides the whole player, armor included)
+    private void tryActivateFlowInvisibility(Player p) {
+        UUID id = p.getUniqueId();
+        long now = System.currentTimeMillis();
+        Long cd = flowInvisCooldowns.get(id);
+        if (cd != null && cd > now) {
+            p.sendMessage(c("&cPlease wait until the cooldown finishes."));
+            return;
+        }
+        flowInvisCooldowns.put(id, now + FLOW_INVIS_COOLDOWN_MS);
+        startCooldownDisplay(p);
+
+        flowInvisible.add(id);
+        p.getWorld().spawnParticle(Particle.SOUL, p.getLocation().add(0, 1, 0), 40, 0.4, 0.6, 0.4, 0.02);
+        for (Player other : getServer().getOnlinePlayers()) {
+            if (!other.equals(p)) other.hidePlayer(this, p);
+        }
+        // the potion effect covers mobs, hidePlayer covers every other player
+        p.addPotionEffect(new PotionEffect(PotionEffectType.INVISIBILITY, (int) FLOW_INVIS_TICKS, 0, true, false, false));
+        p.sendMessage(c("&bYou vanish for 5 seconds."));
+
+        new BukkitRunnable() {
+            @Override public void run() {
+                endFlowInvisibility(id);
+            }
+        }.runTaskLater(this, FLOW_INVIS_TICKS);
+    }
+
+    private void endFlowInvisibility(UUID id) {
+        if (!flowInvisible.remove(id)) return;
+        Player p = getServer().getPlayer(id);
+        if (p == null) return;
+        for (Player other : getServer().getOnlinePlayers()) {
+            if (!other.equals(p)) other.showPlayer(this, p);
+        }
+        p.removePotionEffect(PotionEffectType.INVISIBILITY);
+        p.sendMessage(c("&7You're visible again."));
+    }
+
+    // flow ult 3: stun whoever you're looking at for 3 seconds (no left or right clicks)
+    private void tryActivateFlowStun(Player p) {
+        UUID id = p.getUniqueId();
+        long now = System.currentTimeMillis();
+        Long cd = flowStunCooldowns.get(id);
+        if (cd != null && cd > now) {
+            p.sendMessage(c("&cPlease wait until the cooldown finishes."));
+            return;
+        }
+        Location eye = p.getEyeLocation();
+        RayTraceResult hit = p.getWorld().rayTrace(eye, eye.getDirection(), FLOW_STUN_RANGE,
+                FluidCollisionMode.NEVER, true, 0.5,
+                en -> en instanceof Player other && !other.equals(p) && other.getGameMode() != GameMode.SPECTATOR);
+        if (hit == null || !(hit.getHitEntity() instanceof Player target)) {
+            p.sendMessage(c("&cNo one in sight to stun."));
+            return;
+        }
+        flowStunCooldowns.put(id, now + FLOW_STUN_COOLDOWN_MS);
+        startCooldownDisplay(p);
+
+        UUID targetId = target.getUniqueId();
+        stunnedUntil.put(targetId, now + FLOW_STUN_DURATION_MS);
+        target.clearActiveItem(); // drops whatever they were holding right click on (eating, blocking, bow)
+        target.sendMessage(c("&cYou've been stunned!"));
+        p.sendMessage(c("&dYou stunned " + target.getName() + " for 3 seconds."));
+        target.getWorld().spawnParticle(Particle.SOUL, target.getLocation().add(0, 1, 0), 30, 0.4, 0.6, 0.4, 0.02);
+
+        new BukkitRunnable() {
+            @Override public void run() {
+                if (!target.isOnline() || !isStunned(targetId)) {
+                    cancel();
+                    return;
+                }
+                target.getWorld().spawnParticle(Particle.SOUL, target.getLocation().add(0, 2.1, 0), 6, 0.3, 0.1, 0.3, 0.01);
+            }
+        }.runTaskTimer(this, 0L, 5L);
     }
 
     private void tryActivateSilence(Player p) {
@@ -383,6 +540,8 @@ public class Coral extends JavaPlugin implements Listener, CommandExecutor, TabC
                 remaining = Math.max(remaining, raiserCooldowns.getOrDefault(id, 0L) - now);
                 remaining = Math.max(remaining, eyeCooldowns.getOrDefault(id, 0L) - now);
                 remaining = Math.max(remaining, tideCooldowns.getOrDefault(id, 0L) - now);
+                remaining = Math.max(remaining, flowInvisCooldowns.getOrDefault(id, 0L) - now);
+                remaining = Math.max(remaining, flowStunCooldowns.getOrDefault(id, 0L) - now);
                 if (remaining <= 0) {
                     actionBarTasks.remove(id);
                     cancel();
@@ -421,7 +580,8 @@ public class Coral extends JavaPlugin implements Listener, CommandExecutor, TabC
 
     @Override
     public boolean onCommand(CommandSender sender, Command cmd, String label, String[] args) {
-        if (!label.equalsIgnoreCase("givealltrims")) return false;
+        if (cmd.getName().equalsIgnoreCase("use")) return handleUse(sender, args);
+        if (!cmd.getName().equalsIgnoreCase("givealltrims")) return false;
         if (!(sender instanceof Player p)) {
             sender.sendMessage(c("&cThis command can only be used by players."));
             return true;
@@ -434,9 +594,44 @@ public class Coral extends JavaPlugin implements Listener, CommandExecutor, TabC
         return true;
     }
 
+    // /use ultimate 2 -> flow invisibility, /use ultimate 3 -> flow stun
+    private boolean handleUse(CommandSender sender, String[] args) {
+        if (!(sender instanceof Player p)) {
+            sender.sendMessage(c("&cThis command can only be used by players."));
+            return true;
+        }
+        if (!p.hasPermission("coral.use")) {
+            p.sendMessage(c("&cYou do not have permission to use this command."));
+            return true;
+        }
+        if (args.length != 2 || !args[0].equalsIgnoreCase("ultimate")) {
+            p.sendMessage(c("&cUsage: /use ultimate <2|3>"));
+            return true;
+        }
+        if (!hasTrimPattern(p, TrimPattern.FLOW)) {
+            p.sendMessage(c("&cYou need a flow trim equipped to use that."));
+            return true;
+        }
+        switch (args[1]) {
+            case "2" -> tryActivateFlowInvisibility(p);
+            case "3" -> tryActivateFlowStun(p);
+            default -> p.sendMessage(c("&cUsage: /use ultimate <2|3>"));
+        }
+        return true;
+    }
+
     @Override
     public List<String> onTabComplete(CommandSender sender, Command cmd, String label, String[] args) {
-        return label.equalsIgnoreCase("givealltrims") ? Collections.emptyList() : null;
+        if (cmd.getName().equalsIgnoreCase("use")) {
+            if (args.length == 1) {
+                return List.of("ultimate").stream().filter(s -> s.startsWith(args[0].toLowerCase())).toList();
+            }
+            if (args.length == 2 && args[0].equalsIgnoreCase("ultimate")) {
+                return List.of("2", "3").stream().filter(s -> s.startsWith(args[1])).toList();
+            }
+            return Collections.emptyList();
+        }
+        return cmd.getName().equalsIgnoreCase("givealltrims") ? Collections.emptyList() : null;
     }
 
     private String c(String s) { return ChatColor.translateAlternateColorCodes('&', s); }
