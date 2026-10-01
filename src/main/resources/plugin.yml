@@ -2,11 +2,18 @@ name: Coral
 version: 1.0
 main: com.coral.Coral
 api-version: '1.21'
+description: armor trims that actually do something. wear the trim, use the power.
 commands:
   givealltrims:
-    description: Gives a full trim-powered netherite armor set
+    description: hands you a full netherite set with every trim power on it
     usage: /givealltrims
+  use:
+    description: fire off a flow trim ultimate, like vanishing or stunning whoever you're staring at
+    usage: /use ultimate <2|3>
 permissions:
   coral.givealltrims:
-    description: Allows use of /givealltrims
+    description: lets you grab the full trim set with /givealltrims
     default: op
+  coral.use:
+    description: lets you use your flow trim ultimates with /use
+    default: true
