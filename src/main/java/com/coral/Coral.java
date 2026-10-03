@@ -28,6 +28,7 @@ import org.bukkit.event.entity.PlayerDeathEvent;
 import org.bukkit.event.player.PlayerInteractEntityEvent;
 import org.bukkit.event.player.PlayerInteractEvent;
 import org.bukkit.event.player.PlayerJoinEvent;
+import org.bukkit.event.player.PlayerMoveEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.event.player.PlayerRespawnEvent;
 import org.bukkit.event.player.PlayerSwapHandItemsEvent;
@@ -62,16 +63,19 @@ public class Coral extends JavaPlugin implements Listener, CommandExecutor, TabC
     private static final long TIDE_COOLDOWN_MS = 60_000;
 
     // flow ult 2 (invisibility) and ult 3 (stun)
-    private static final long FLOW_INVIS_COOLDOWN_MS = 90_000;
+    private static final long FLOW_INVIS_COOLDOWN_MS = 40_000;
     private static final long FLOW_INVIS_TICKS = 100L; // 5 seconds
-    private static final long FLOW_STUN_COOLDOWN_MS = 60_000;
-    private static final long FLOW_STUN_DURATION_MS = 3_000;
+    private static final long FLOW_STUN_COOLDOWN_MS = 30_000;
+    private static final long FLOW_STUN_DURATION_MS = 5_000;
+    private static final long FLOW_STUN_TICKS = 100L; // 5 seconds, keep in sync with the ms value above
+    private static final int STUN_SLOWNESS_AMPLIFIER = 255;
     private static final double FLOW_STUN_RANGE = 15.0;
 
     private final Map<UUID, Long> flowCooldowns = new HashMap<>();
     private final Map<UUID, Long> flowInvisCooldowns = new HashMap<>();
     private final Map<UUID, Long> flowStunCooldowns = new HashMap<>();
     private final Map<UUID, Long> stunnedUntil = new HashMap<>();
+    private final Map<UUID, float[]> stunLook = new HashMap<>(); // yaw, pitch they were facing when stunned
     private final Set<UUID> flowInvisible = new HashSet<>();
     private final Map<UUID, Long> silenceCooldowns = new HashMap<>();
     private final Map<UUID, Long> raiserCooldowns = new HashMap<>();
@@ -154,14 +158,34 @@ public class Coral extends JavaPlugin implements Listener, CommandExecutor, TabC
     public void onQuit(PlayerQuitEvent e) {
         UUID id = e.getPlayer().getUniqueId();
         endFlowInvisibility(id);
-        stunnedUntil.remove(id);
+        endStun(id);
     }
 
     @EventHandler
     public void onDeath(PlayerDeathEvent e) {
         UUID id = e.getEntity().getUniqueId();
         endFlowInvisibility(id);
-        stunnedUntil.remove(id);
+        endStun(id);
+    }
+
+    // stun: frozen in place and the camera snaps back to where they were facing
+    @EventHandler(priority = EventPriority.LOWEST)
+    public void onStunnedMove(PlayerMoveEvent e) {
+        Player p = e.getPlayer();
+        UUID id = p.getUniqueId();
+        if (!isStunned(id)) return;
+        Location from = e.getFrom();
+        Location to = e.getTo();
+        if (to == null) return;
+        float[] look = stunLook.get(id);
+        float yaw = look != null ? look[0] : from.getYaw();
+        float pitch = look != null ? look[1] : from.getPitch();
+        boolean moved = to.getX() != from.getX() || to.getZ() != from.getZ() || to.getY() > from.getY();
+        boolean turned = Math.abs(to.getYaw() - yaw) > 0.01f || Math.abs(to.getPitch() - pitch) > 0.01f;
+        if (!moved && !turned) return;
+        // no sideways movement or going up (falling is still allowed), camera locked
+        Location fixed = new Location(from.getWorld(), from.getX(), Math.min(to.getY(), from.getY()), from.getZ(), yaw, pitch);
+        e.setTo(fixed);
     }
 
     // stun: no right clicks (air, blocks, items) ...
@@ -199,6 +223,18 @@ public class Coral extends JavaPlugin implements Listener, CommandExecutor, TabC
             return false;
         }
         return true;
+    }
+
+    // ends the stun early/cleanly and takes the slowness off (only our own slowness 255)
+    private void endStun(UUID id) {
+        stunnedUntil.remove(id);
+        stunLook.remove(id);
+        Player p = getServer().getPlayer(id);
+        if (p == null) return;
+        PotionEffect slow = p.getPotionEffect(PotionEffectType.SLOWNESS);
+        if (slow != null && slow.getAmplifier() == STUN_SLOWNESS_AMPLIFIER) {
+            p.removePotionEffect(PotionEffectType.SLOWNESS);
+        }
     }
 
     @EventHandler
@@ -243,6 +279,7 @@ public class Coral extends JavaPlugin implements Listener, CommandExecutor, TabC
         Player p = e.getPlayer();
         if (!p.isSneaking()) return;
         e.setCancelled(true);
+        if (isStunned(p.getUniqueId())) return; // stunned players can't use any ability
         ItemStack[] armor = p.getInventory().getArmorContents();
         boolean hasFlow = false, hasSilence = false, hasEye = false, hasRaiser = false;
         for (ItemStack piece : armor) {
@@ -392,7 +429,7 @@ public class Coral extends JavaPlugin implements Listener, CommandExecutor, TabC
         p.sendMessage(c("&7You're visible again."));
     }
 
-    // flow ult 3: stun whoever you're looking at for 3 seconds (no left or right clicks)
+    // flow ult 3: stun whoever you're looking at for 5 seconds (no left or right clicks, no moving)
     private void tryActivateFlowStun(Player p) {
         UUID id = p.getUniqueId();
         long now = System.currentTimeMillis();
@@ -414,9 +451,16 @@ public class Coral extends JavaPlugin implements Listener, CommandExecutor, TabC
 
         UUID targetId = target.getUniqueId();
         stunnedUntil.put(targetId, now + FLOW_STUN_DURATION_MS);
+        // slowness 255 = can't walk, removed again when the stun ends
+        target.addPotionEffect(new PotionEffect(PotionEffectType.SLOWNESS, (int) FLOW_STUN_TICKS, STUN_SLOWNESS_AMPLIFIER, true, false, false));
+        Location tl = target.getLocation();
+        stunLook.put(targetId, new float[]{tl.getYaw(), tl.getPitch()});
+        flowPending.remove(targetId); // cancels a flow lunge/slam they were in the middle of
+        Vector vel = target.getVelocity();
+        target.setVelocity(new Vector(0, Math.min(vel.getY(), 0), 0));
         target.clearActiveItem(); // drops whatever they were holding right click on (eating, blocking, bow)
         target.sendMessage(c("&cYou've been stunned!"));
-        p.sendMessage(c("&dYou stunned " + target.getName() + " for 3 seconds."));
+        p.sendMessage(c("&dYou stunned " + target.getName() + " for 5 seconds."));
         target.getWorld().spawnParticle(Particle.SOUL, target.getLocation().add(0, 1, 0), 30, 0.4, 0.6, 0.4, 0.02);
 
         new BukkitRunnable() {
@@ -428,6 +472,15 @@ public class Coral extends JavaPlugin implements Listener, CommandExecutor, TabC
                 target.getWorld().spawnParticle(Particle.SOUL, target.getLocation().add(0, 2.1, 0), 6, 0.3, 0.1, 0.3, 0.01);
             }
         }.runTaskTimer(this, 0L, 5L);
+
+        // end the stun right on time (skips if they got re-stunned in the meantime)
+        new BukkitRunnable() {
+            @Override public void run() {
+                Long until = stunnedUntil.get(targetId);
+                if (until != null && until > System.currentTimeMillis() + 100) return;
+                endStun(targetId);
+            }
+        }.runTaskLater(this, FLOW_STUN_TICKS);
     }
 
     private void tryActivateSilence(Player p) {
@@ -535,28 +588,43 @@ public class Coral extends JavaPlugin implements Listener, CommandExecutor, TabC
                     return;
                 }
                 long now = System.currentTimeMillis();
-                long remaining = Math.max(0, flowCooldowns.getOrDefault(id, 0L) - now);
-                remaining = Math.max(remaining, silenceCooldowns.getOrDefault(id, 0L) - now);
-                remaining = Math.max(remaining, raiserCooldowns.getOrDefault(id, 0L) - now);
-                remaining = Math.max(remaining, eyeCooldowns.getOrDefault(id, 0L) - now);
-                remaining = Math.max(remaining, tideCooldowns.getOrDefault(id, 0L) - now);
-                remaining = Math.max(remaining, flowInvisCooldowns.getOrDefault(id, 0L) - now);
-                remaining = Math.max(remaining, flowStunCooldowns.getOrDefault(id, 0L) - now);
-                if (remaining <= 0) {
+                long flowLeft = flowCooldowns.getOrDefault(id, 0L) - now;
+                long invisLeft = flowInvisCooldowns.getOrDefault(id, 0L) - now;
+                long stunLeft = flowStunCooldowns.getOrDefault(id, 0L) - now;
+                long otherLeft = Math.max(silenceCooldowns.getOrDefault(id, 0L) - now,
+                        Math.max(raiserCooldowns.getOrDefault(id, 0L) - now,
+                        Math.max(eyeCooldowns.getOrDefault(id, 0L) - now,
+                                tideCooldowns.getOrDefault(id, 0L) - now)));
+                boolean flowActive = flowLeft > 0 || invisLeft > 0 || stunLeft > 0;
+                if (!flowActive && otherLeft <= 0) {
                     actionBarTasks.remove(id);
                     cancel();
                     return;
                 }
-                long totalSeconds = (remaining + 999) / 1000;
-                long minutes = totalSeconds / 60;
-                long seconds = totalSeconds % 60;
-                Component bar = Component.text("⌚ ").color(NamedTextColor.GOLD)
-                        .append(Component.text(String.format("%02d:%02d", minutes, seconds)).color(NamedTextColor.YELLOW));
+                Component bar;
+                if (flowActive) {
+                    // ult 1 | ult 2 | ult 3
+                    bar = Component.text("⌚ ").color(NamedTextColor.GOLD)
+                            .append(slot(flowLeft))
+                            .append(Component.text(" | ").color(NamedTextColor.DARK_GRAY))
+                            .append(slot(invisLeft))
+                            .append(Component.text(" | ").color(NamedTextColor.DARK_GRAY))
+                            .append(slot(stunLeft));
+                } else {
+                    bar = Component.text("⌚ ").color(NamedTextColor.GOLD).append(slot(otherLeft));
+                }
                 p.sendActionBar(bar);
             }
         };
         actionBarTasks.put(id, task);
         task.runTaskTimer(this, 0L, 20L);
+    }
+
+    // one cooldown slot: yellow mm:ss while on cooldown, green READY when it's up
+    private Component slot(long remainingMs) {
+        if (remainingMs <= 0) return Component.text("READY").color(NamedTextColor.GREEN);
+        long totalSeconds = (remainingMs + 999) / 1000;
+        return Component.text(String.format("%02d:%02d", totalSeconds / 60, totalSeconds % 60)).color(NamedTextColor.YELLOW);
     }
 
     private ItemStack trimmedPiece(Material material, TrimPattern pattern) {
@@ -606,6 +674,10 @@ public class Coral extends JavaPlugin implements Listener, CommandExecutor, TabC
         }
         if (args.length != 2 || !args[0].equalsIgnoreCase("ultimate")) {
             p.sendMessage(c("&cUsage: /use ultimate <2|3>"));
+            return true;
+        }
+        if (isStunned(p.getUniqueId())) {
+            p.sendMessage(c("&cYou can't use abilities while stunned."));
             return true;
         }
         if (!hasTrimPattern(p, TrimPattern.FLOW)) {
