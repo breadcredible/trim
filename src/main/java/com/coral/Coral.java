@@ -91,6 +91,7 @@ public class Coral extends JavaPlugin implements Listener, CommandExecutor, TabC
     private final Map<UUID, float[]> stunLook = new HashMap<>();
     private final Set<UUID> riftInvisible = new HashSet<>();
     private final Set<UUID> riftHolders = new HashSet<>();
+    private final Set<UUID> riftCarriers = new HashSet<>();
     private final Map<UUID, Long> silenceCooldowns = new HashMap<>();
     private final Map<UUID, Long> raiserCooldowns = new HashMap<>();
     private final Map<UUID, Long> eyeCooldowns = new HashMap<>();
@@ -137,7 +138,7 @@ public class Coral extends JavaPlugin implements Listener, CommandExecutor, TabC
         }
         if (changed) p.getInventory().setArmorContents(armor);
 
-        boolean grantsSpeed = holdsSpeedRift(p) || hasTide;
+        boolean grantsSpeed = carriesSpeedRift(p) || hasTide;
         boolean grantsStrength = hasSilence || hasTide;
         syncTrimEffect(p, PotionEffectType.SPEED, 1, grantsSpeed);
         syncTrimEffect(p, PotionEffectType.STRENGTH, 1, grantsStrength);
@@ -160,6 +161,13 @@ public class Coral extends JavaPlugin implements Listener, CommandExecutor, TabC
         if (item == null || item.getType() != Material.NETHER_STAR) return false;
         ItemMeta meta = item.getItemMeta();
         return meta != null && meta.hasItemModel() && RIFT_MODEL.equals(meta.getItemModel());
+    }
+
+    private boolean carriesSpeedRift(Player p) {
+        for (ItemStack item : p.getInventory().getContents()) {
+            if (isSpeedRift(item)) return true;
+        }
+        return false;
     }
 
     private boolean holdsSpeedRift(Player p) {
@@ -214,6 +222,7 @@ public class Coral extends JavaPlugin implements Listener, CommandExecutor, TabC
     public void onQuit(PlayerQuitEvent e) {
         UUID id = e.getPlayer().getUniqueId();
         riftHolders.remove(id);
+        riftCarriers.remove(id);
         endInvisibility(id);
         endStun(id);
     }
@@ -621,6 +630,7 @@ public class Coral extends JavaPlugin implements Listener, CommandExecutor, TabC
         for (Player p : getServer().getOnlinePlayers()) {
             UUID id = p.getUniqueId();
             boolean holding = holdsSpeedRift(p);
+            boolean carrying = holding || carriesSpeedRift(p);
             if (holding != riftHolders.contains(id)) {
                 if (holding) {
                     riftHolders.add(id);
@@ -628,6 +638,10 @@ public class Coral extends JavaPlugin implements Listener, CommandExecutor, TabC
                     riftHolders.remove(id);
                     p.sendActionBar(Component.empty());
                 }
+            }
+            if (carrying != riftCarriers.contains(id)) {
+                if (carrying) riftCarriers.add(id);
+                else riftCarriers.remove(id);
                 refreshTrimPowers(p);
             }
             if (holding) {
