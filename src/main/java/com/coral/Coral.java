@@ -76,13 +76,13 @@ public class Coral extends JavaPlugin implements Listener, CommandExecutor, TabC
     private static final int STUN_SLOWNESS_AMPLIFIER = 255;
     private static final double STUN_RANGE = 15.0;
 
-    private static final NamespacedKey RIFT_MODEL = NamespacedKey.fromString("coral:bolt_rift");
+    private static final NamespacedKey RIFT_MODEL = NamespacedKey.fromString("coral:speed_rift");
     private static final Key ICON_FONT = Key.key("coral", "icons");
     private static final String ICON_DASH = "\uE001";
     private static final String ICON_INVIS = "\uE002";
     private static final String ICON_STUN = "\uE003";
-    private static final String RIFT_NAME = "Bolt Rift";
-    private static final String RIFT_LORE = "Forged from a fracture between dimensions, the Bolt Rift commands lightning-fast movement, absolute concealment, and the power to disrupt its enemies. Those caught in its rift are struck before they can react.";
+    private static final String RIFT_NAME = "Speed Rift";
+    private static final String RIFT_LORE = "Right-click to Use";
 
     private final Map<UUID, Long> dashCooldowns = new HashMap<>();
     private final Map<UUID, Long> invisCooldowns = new HashMap<>();
@@ -137,7 +137,7 @@ public class Coral extends JavaPlugin implements Listener, CommandExecutor, TabC
         }
         if (changed) p.getInventory().setArmorContents(armor);
 
-        boolean grantsSpeed = holdsBoltRift(p) || hasTide;
+        boolean grantsSpeed = holdsSpeedRift(p) || hasTide;
         boolean grantsStrength = hasSilence || hasTide;
         syncTrimEffect(p, PotionEffectType.SPEED, 1, grantsSpeed);
         syncTrimEffect(p, PotionEffectType.STRENGTH, 1, grantsStrength);
@@ -156,24 +156,27 @@ public class Coral extends JavaPlugin implements Listener, CommandExecutor, TabC
         }
     }
 
-    private boolean isBoltRift(ItemStack item) {
+    private boolean isSpeedRift(ItemStack item) {
         if (item == null || item.getType() != Material.NETHER_STAR) return false;
         ItemMeta meta = item.getItemMeta();
         return meta != null && meta.hasItemModel() && RIFT_MODEL.equals(meta.getItemModel());
     }
 
-    private boolean holdsBoltRift(Player p) {
+    private boolean holdsSpeedRift(Player p) {
         PlayerInventory inv = p.getInventory();
-        return isBoltRift(inv.getItemInMainHand()) || isBoltRift(inv.getItemInOffHand());
+        return isSpeedRift(inv.getItemInMainHand()) || isSpeedRift(inv.getItemInOffHand());
     }
 
-    private ItemStack boltRift() {
+    private ItemStack speedRift() {
         ItemStack item = new ItemStack(Material.NETHER_STAR);
         ItemMeta meta = item.getItemMeta();
         meta.setItemModel(RIFT_MODEL);
-        meta.customName(gradient(RIFT_NAME, 0x00fbff, 0x00878a, TextDecoration.State.NOT_SET));
-        meta.itemName(gradient(RIFT_NAME, 0x00fbff, 0x00878a, TextDecoration.State.TRUE));
-        meta.lore(List.of(gradient(RIFT_LORE, 0xffdd00, 0xebcb00, TextDecoration.State.FALSE)));
+        Component name = Component.text(RIFT_NAME, NamedTextColor.LIGHT_PURPLE)
+                .decoration(TextDecoration.ITALIC, false);
+        meta.customName(name);
+        meta.itemName(name);
+        meta.lore(List.of(Component.text(RIFT_LORE, NamedTextColor.GRAY)
+                .decoration(TextDecoration.ITALIC, false)));
         item.setItemMeta(meta);
         return item;
     }
@@ -339,7 +342,7 @@ public class Coral extends JavaPlugin implements Listener, CommandExecutor, TabC
             else if (pattern.equals(TrimPattern.EYE)) hasEye = true;
             else if (pattern.equals(TrimPattern.RAISER)) hasRaiser = true;
         }
-        if (holdsBoltRift(p)) tryActivateDash(p);
+        if (holdsSpeedRift(p)) tryActivateDash(p);
         if (hasSilence) tryActivateSilence(p);
         if (hasEye) tryActivateEye(p);
         if (hasRaiser) tryActivateRaiser(p);
@@ -617,7 +620,7 @@ public class Coral extends JavaPlugin implements Listener, CommandExecutor, TabC
         long now = System.currentTimeMillis();
         for (Player p : getServer().getOnlinePlayers()) {
             UUID id = p.getUniqueId();
-            boolean holding = holdsBoltRift(p);
+            boolean holding = holdsSpeedRift(p);
             if (holding != riftHolders.contains(id)) {
                 if (holding) {
                     riftHolders.add(id);
@@ -680,8 +683,8 @@ public class Coral extends JavaPlugin implements Listener, CommandExecutor, TabC
         inv.setHelmet(trimmedPiece(Material.NETHERITE_HELMET, TrimPattern.EYE));
         inv.setChestplate(trimmedPiece(Material.NETHERITE_CHESTPLATE, TrimPattern.SILENCE));
         inv.setBoots(trimmedPiece(Material.NETHERITE_BOOTS, TrimPattern.RAISER));
-        inv.addItem(boltRift());
-        p.sendMessage(c("&dYou have been given a trim-powered netherite set (Eye / Silence / Raiser) and a Bolt Rift."));
+        inv.addItem(speedRift());
+        p.sendMessage(c("&dYou have been given a trim-powered netherite set (Eye / Silence / Raiser) and a Speed Rift."));
         refreshTrimPowers(p);
     }
 
@@ -718,8 +721,8 @@ public class Coral extends JavaPlugin implements Listener, CommandExecutor, TabC
             p.sendMessage(c("&cYou can't use abilities while stunned."));
             return true;
         }
-        if (!holdsBoltRift(p)) {
-            p.sendMessage(c("&cYou need to hold a Bolt Rift to use that."));
+        if (!holdsSpeedRift(p)) {
+            p.sendMessage(c("&cYou need to hold a Speed Rift to use that."));
             return true;
         }
         switch (args[1]) {
